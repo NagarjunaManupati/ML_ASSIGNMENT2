@@ -271,25 +271,4 @@ ml_assignment_2/
 
 ---
 
-## 👨‍💻 Author
-
-**BITS Pilani - M.Tech (AIML/DSE)**  
-Machine Learning Assignment 2
-
----
-
-## 📄 License
-
-This project is created for educational purposes as part of BITS Pilani coursework.
-
----
-
-## 🙏 Acknowledgments
-
-- BITS Pilani Work Integrated Learning Programmes Division
-- UCI Machine Learning Repository
-- Streamlit Community
-
----
-
 **Last Updated:** February 2026
