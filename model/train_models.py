@@ -1,291 +1,393 @@
+# Machine Learning Classification Models Training Notebook
 
 """
-Machine Learning Assignment 2 - Model Training
-Implements 6 classification models with comprehensive evaluation metrics
+This notebook implements 6 classification models and evaluates them with comprehensive metrics.
+Models: Logistic Regression, Decision Tree, KNN, Naive Bayes, Random Forest, XGBoost
 """
 
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.linear_model import LogisticRegression
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.naive_bayes import GaussianNB
 from sklearn.ensemble import RandomForestClassifier
 from xgboost import XGBClassifier
-from sklearn.metrics import (accuracy_score, roc_auc_score, precision_score, 
-                              recall_score, f1_score, matthews_corrcoef,
-                              confusion_matrix, classification_report)
-import pickle
+from sklearn.metrics import (
+    accuracy_score, roc_auc_score, precision_score,
+    recall_score, f1_score, matthews_corrcoef,
+    confusion_matrix, classification_report
+)
+import matplotlib.pyplot as plt
+import seaborn as sns
 import warnings
 warnings.filterwarnings('ignore')
 
+
 class MLClassificationPipeline:
     """
-    Complete ML Pipeline for training and evaluating 6 classification models
+    Complete ML Classification Pipeline with 6 models
     """
     
-    def __init__(self, dataset_path):
-        """Initialize with dataset path"""
+    def __init__(self, dataset_path, target_column, test_size=0.2, random_state=42):
+        """
+        Initialize the pipeline
+        
+        Parameters:
+        -----------
+        dataset_path : str
+            Path to the CSV dataset
+        target_column : str
+            Name of the target column to predict
+        test_size : float
+            Proportion of dataset to include in test split
+        random_state : int
+            Random seed for reproducibility
+        """
         self.dataset_path = dataset_path
-        self.models = {}
-        self.results = {}
+        self.target_column = target_column
+        self.test_size = test_size
+        self.random_state = random_state
+        
+        self.df = None
         self.X_train = None
         self.X_test = None
         self.y_train = None
         self.y_test = None
-        self.scaler = None
         self.label_encoder = None
+        self.scaler = None
+        self.is_multiclass = False
+        self.results = {}
         
-    def load_and_preprocess_data(self, target_column):
-        """
-        Load dataset and perform preprocessing
-        
-        Args:
-            target_column: Name of the target column
-        """
+    def load_data(self):
+        """Load the dataset"""
         print("Loading dataset...")
-        df = pd.read_csv(self.dataset_path)
+        self.df = pd.read_csv(self.dataset_path)
+        print(f"Dataset loaded: {self.df.shape[0]} rows, {self.df.shape[1]} columns")
         
-        print(f"Dataset shape: {df.shape}")
-        print(f"Features: {df.shape[1] - 1}")
-        print(f"Instances: {df.shape[0]}")
+        # Display basic info
+        print(f"\nDataset Info:")
+        print(f"- Total rows: {self.df.shape[0]}")
+        print(f"- Total columns: {self.df.shape[1]}")
+        print(f"- Missing values: {self.df.isnull().sum().sum()}")
+        print(f"- Duplicate rows: {self.df.duplicated().sum()}")
+        
+        return self.df
+    
+    def preprocess_data(self):
+        """Preprocess the dataset"""
+        print("\nPreprocessing data...")
         
         # Separate features and target
-        X = df.drop(columns=[target_column])
-        y = df[target_column]
+        X = self.df.drop(columns=[self.target_column])
+        y = self.df[self.target_column]
         
-        # Handle categorical features in X
-        for col in X.select_dtypes(include=['object']).columns:
+        # Encode target variable
+        self.label_encoder = LabelEncoder()
+        y_encoded = self.label_encoder.fit_transform(y)
+        
+        # Check if multiclass
+        self.is_multiclass = len(np.unique(y_encoded)) > 2
+        print(f"Classification type: {'Multi-class' if self.is_multiclass else 'Binary'}")
+        print(f"Number of classes: {len(np.unique(y_encoded))}")
+        
+        # Handle categorical features
+        categorical_cols = X.select_dtypes(include=['object']).columns
+        print(f"Categorical columns: {len(categorical_cols)}")
+        
+        for col in categorical_cols:
             le = LabelEncoder()
-            X[col] = le.fit_transform(X[col])
+            X[col] = le.fit_transform(X[col].astype(str))
         
-        # Encode target variable if categorical
-        if y.dtype == 'object':
-            self.label_encoder = LabelEncoder()
-            y = self.label_encoder.fit_transform(y)
+        # Handle missing values
+        if X.isnull().sum().sum() > 0:
+            print("Filling missing values...")
+            X = X.fillna(X.mean())
+        
+        # Feature scaling
+        self.scaler = StandardScaler()
+        X_scaled = self.scaler.fit_transform(X)
         
         # Split data
         self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(
-            X, y, test_size=0.2, random_state=42, stratify=y
+            X_scaled, y_encoded, 
+            test_size=self.test_size, 
+            random_state=self.random_state,
+            stratify=y_encoded
         )
         
-        # Standardize features
-        self.scaler = StandardScaler()
-        self.X_train = self.scaler.fit_transform(self.X_train)
-        self.X_test = self.scaler.transform(self.X_test)
+        print(f"Training set: {self.X_train.shape[0]} samples")
+        print(f"Test set: {self.X_test.shape[0]} samples")
         
-        print(f"Training set: {self.X_train.shape}")
-        print(f"Test set: {self.X_test.shape}")
+    def calculate_metrics(self, y_true, y_pred, y_pred_proba):
+        """Calculate all evaluation metrics"""
         
-        return self
-    
-    def train_all_models(self):
-        """Train all 6 classification models"""
+        metrics = {}
         
-        print("\n" + "="*50)
-        print("Training Classification Models")
-        print("="*50)
+        # Accuracy
+        metrics['Accuracy'] = accuracy_score(y_true, y_pred)
         
-        # 1. Logistic Regression
-        print("\n1. Training Logistic Regression...")
-        lr = LogisticRegression(max_iter=1000, random_state=42)
-        lr.fit(self.X_train, self.y_train)
-        self.models['Logistic Regression'] = lr
-        
-        # 2. Decision Tree
-        print("2. Training Decision Tree...")
-        dt = DecisionTreeClassifier(random_state=42, max_depth=10)
-        dt.fit(self.X_train, self.y_train)
-        self.models['Decision Tree'] = dt
-        
-        # 3. K-Nearest Neighbors
-        print("3. Training K-Nearest Neighbors...")
-        knn = KNeighborsClassifier(n_neighbors=5)
-        knn.fit(self.X_train, self.y_train)
-        self.models['kNN'] = knn
-        
-        # 4. Naive Bayes
-        print("4. Training Naive Bayes...")
-        nb = GaussianNB()
-        nb.fit(self.X_train, self.y_train)
-        self.models['Naive Bayes'] = nb
-        
-        # 5. Random Forest
-        print("5. Training Random Forest...")
-        rf = RandomForestClassifier(n_estimators=100, random_state=42, max_depth=10)
-        rf.fit(self.X_train, self.y_train)
-        self.models['Random Forest'] = rf
-        
-        # 6. XGBoost
-        print("6. Training XGBoost...")
-        xgb = XGBClassifier(n_estimators=100, random_state=42, max_depth=6, 
-                           eval_metric='logloss')
-        xgb.fit(self.X_train, self.y_train)
-        self.models['XGBoost'] = xgb
-        
-        print("\nAll models trained successfully!")
-        return self
-    
-    def evaluate_model(self, model_name, model):
-        """
-        Evaluate a single model with all required metrics
-        
-        Args:
-            model_name: Name of the model
-            model: Trained model object
-        """
-        # Make predictions
-        y_pred = model.predict(self.X_test)
-        
-        # For AUC, we need probability predictions
-        if hasattr(model, 'predict_proba'):
-            y_pred_proba = model.predict_proba(self.X_test)
-            # Handle binary and multi-class cases
-            if len(np.unique(self.y_test)) == 2:
-                auc = roc_auc_score(self.y_test, y_pred_proba[:, 1])
+        # AUC Score
+        try:
+            if self.is_multiclass:
+                metrics['AUC'] = roc_auc_score(
+                    y_true, y_pred_proba, 
+                    multi_class='ovr', 
+                    average='weighted'
+                )
             else:
-                auc = roc_auc_score(self.y_test, y_pred_proba, multi_class='ovr')
-        else:
-            auc = None
+                metrics['AUC'] = roc_auc_score(y_true, y_pred_proba[:, 1])
+        except Exception as e:
+            print(f"Warning: Could not calculate AUC - {e}")
+            metrics['AUC'] = 0.0
+        
+        # Precision, Recall, F1
+        metrics['Precision'] = precision_score(
+            y_true, y_pred, average='weighted', zero_division=0
+        )
+        metrics['Recall'] = recall_score(
+            y_true, y_pred, average='weighted', zero_division=0
+        )
+        metrics['F1'] = f1_score(
+            y_true, y_pred, average='weighted', zero_division=0
+        )
+        
+        # Matthews Correlation Coefficient
+        metrics['MCC'] = matthews_corrcoef(y_true, y_pred)
+        
+        return metrics
+    
+    def train_model(self, model_name, model):
+        """Train a single model and calculate metrics"""
+        
+        print(f"\nTraining {model_name}...")
+        
+        # Train
+        model.fit(self.X_train, self.y_train)
+        
+        # Predict
+        y_pred = model.predict(self.X_test)
+        y_pred_proba = model.predict_proba(self.X_test)
         
         # Calculate metrics
-        accuracy = accuracy_score(self.y_test, y_pred)
+        metrics = self.calculate_metrics(self.y_test, y_pred, y_pred_proba)
         
-        # For precision, recall, F1 - handle multi-class
-        avg_method = 'binary' if len(np.unique(self.y_test)) == 2 else 'weighted'
-        precision = precision_score(self.y_test, y_pred, average=avg_method, zero_division=0)
-        recall = recall_score(self.y_test, y_pred, average=avg_method, zero_division=0)
-        f1 = f1_score(self.y_test, y_pred, average=avg_method, zero_division=0)
-        
-        # MCC
-        mcc = matthews_corrcoef(self.y_test, y_pred)
-        
-        # Confusion Matrix
-        cm = confusion_matrix(self.y_test, y_pred)
-        
-        # Classification Report
-        report = classification_report(self.y_test, y_pred)
-        
-        return {
-            'Accuracy': accuracy,
-            'AUC': auc,
-            'Precision': precision,
-            'Recall': recall,
-            'F1': f1,
-            'MCC': mcc,
-            'Confusion Matrix': cm,
-            'Classification Report': report
+        # Store results
+        self.results[model_name] = {
+            'model': model,
+            'y_pred': y_pred,
+            'metrics': metrics,
+            'confusion_matrix': confusion_matrix(self.y_test, y_pred),
+            'classification_report': classification_report(self.y_test, y_pred)
         }
+        
+        # Print metrics
+        print(f"Accuracy: {metrics['Accuracy']:.4f}")
+        print(f"AUC: {metrics['AUC']:.4f}")
+        print(f"F1 Score: {metrics['F1']:.4f}")
+        
+        return metrics
     
-    def evaluate_all_models(self):
-        """Evaluate all trained models"""
+    def train_all_models(self):
+        """Train all 6 required models"""
         
-        print("\n" + "="*50)
-        print("Evaluating All Models")
-        print("="*50)
+        print("\n" + "="*60)
+        print("TRAINING ALL MODELS")
+        print("="*60)
         
-        for model_name, model in self.models.items():
-            print(f"\nEvaluating {model_name}...")
-            self.results[model_name] = self.evaluate_model(model_name, model)
+        models = {
+            'Logistic Regression': LogisticRegression(max_iter=1000, random_state=self.random_state),
+            'Decision Tree': DecisionTreeClassifier(random_state=self.random_state),
+            'K-Nearest Neighbors': KNeighborsClassifier(),
+            'Naive Bayes': GaussianNB(),
+            'Random Forest': RandomForestClassifier(n_estimators=100, random_state=self.random_state),
+            'XGBoost': XGBClassifier(
+                eval_metric='logloss', 
+                random_state=self.random_state, 
+                use_label_encoder=False
+            )
+        }
         
-        return self
+        for model_name, model in models.items():
+            self.train_model(model_name, model)
+        
+        print("\n" + "="*60)
+        print("ALL MODELS TRAINED SUCCESSFULLY")
+        print("="*60)
     
-    def print_results_table(self):
-        """Print results in a formatted table"""
+    def display_results(self):
+        """Display comprehensive results"""
         
         print("\n" + "="*80)
-        print("MODEL EVALUATION RESULTS")
+        print("MODEL PERFORMANCE COMPARISON")
         print("="*80)
         
-        # Create results dataframe
-        results_data = []
-        for model_name, metrics in self.results.items():
-            results_data.append({
+        # Create comparison table
+        metrics_data = []
+        for model_name, result in self.results.items():
+            metrics = result['metrics']
+            metrics_data.append({
                 'Model': model_name,
                 'Accuracy': f"{metrics['Accuracy']:.4f}",
-                'AUC': f"{metrics['AUC']:.4f}" if metrics['AUC'] else "N/A",
+                'AUC': f"{metrics['AUC']:.4f}",
                 'Precision': f"{metrics['Precision']:.4f}",
                 'Recall': f"{metrics['Recall']:.4f}",
                 'F1': f"{metrics['F1']:.4f}",
                 'MCC': f"{metrics['MCC']:.4f}"
             })
         
-        results_df = pd.DataFrame(results_data)
-        print(results_df.to_string(index=False))
+        metrics_df = pd.DataFrame(metrics_data)
+        print("\n", metrics_df.to_string(index=False))
         
-        return results_df
+        # Find best models
+        print("\n" + "="*80)
+        print("BEST PERFORMING MODELS")
+        print("="*80)
+        
+        best_accuracy = max(self.results.items(), key=lambda x: x[1]['metrics']['Accuracy'])
+        best_f1 = max(self.results.items(), key=lambda x: x[1]['metrics']['F1'])
+        best_mcc = max(self.results.items(), key=lambda x: x[1]['metrics']['MCC'])
+        
+        print(f"\nBest Accuracy: {best_accuracy[0]} ({best_accuracy[1]['metrics']['Accuracy']:.4f})")
+        print(f"Best F1 Score: {best_f1[0]} ({best_f1[1]['metrics']['F1']:.4f})")
+        print(f"Best MCC Score: {best_mcc[0]} ({best_mcc[1]['metrics']['MCC']:.4f})")
+        
+        return metrics_df
     
-    def save_models(self, output_dir='model'):
-        """Save all trained models"""
+    def plot_comparison(self):
+        """Plot comparative visualizations"""
         
-        print(f"\nSaving models to {output_dir}/...")
+        fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+        axes = axes.ravel()
         
-        # Save individual models
-        for model_name, model in self.models.items():
-            filename = f"{output_dir}/{model_name.replace(' ', '_').lower()}.pkl"
-            with open(filename, 'wb') as f:
-                pickle.dump(model, f)
+        metric_names = ['Accuracy', 'AUC', 'Precision', 'Recall', 'F1', 'MCC']
         
-        # Save scaler and label encoder
-        with open(f"{output_dir}/scaler.pkl", 'wb') as f:
-            pickle.dump(self.scaler, f)
+        for idx, metric_name in enumerate(metric_names):
+            ax = axes[idx]
+            
+            model_names = list(self.results.keys())
+            values = [self.results[m]['metrics'][metric_name] for m in model_names]
+            
+            bars = ax.bar(range(len(model_names)), values, color='steelblue', alpha=0.7)
+            
+            # Highlight best model
+            best_idx = values.index(max(values))
+            bars[best_idx].set_color('green')
+            bars[best_idx].set_alpha(1.0)
+            
+            ax.set_xticks(range(len(model_names)))
+            ax.set_xticklabels(model_names, rotation=45, ha='right')
+            ax.set_ylabel('Score')
+            ax.set_title(f'{metric_name} Comparison', fontweight='bold')
+            ax.set_ylim(0, 1.1)
+            ax.grid(axis='y', alpha=0.3)
+            
+            # Add value labels
+            for i, v in enumerate(values):
+                ax.text(i, v + 0.02, f'{v:.3f}', ha='center', fontsize=9)
         
-        if self.label_encoder:
-            with open(f"{output_dir}/label_encoder.pkl", 'wb') as f:
-                pickle.dump(self.label_encoder, f)
+        plt.tight_layout()
+        plt.savefig('model_comparison.png', dpi=300, bbox_inches='tight')
+        print("\nComparison plot saved as 'model_comparison.png'")
+        plt.show()
+    
+    def plot_confusion_matrices(self):
+        """Plot confusion matrices for all models"""
         
-        # Save results
-        results_for_save = {}
-        for model_name, metrics in self.results.items():
-            results_for_save[model_name] = {
-                'Accuracy': float(metrics['Accuracy']),
-                'AUC': float(metrics['AUC']) if metrics['AUC'] else None,
-                'Precision': float(metrics['Precision']),
-                'Recall': float(metrics['Recall']),
-                'F1': float(metrics['F1']),
-                'MCC': float(metrics['MCC']),
-            }
+        fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+        axes = axes.ravel()
         
-        with open(f"{output_dir}/results.pkl", 'wb') as f:
-            pickle.dump(results_for_save, f)
+        for idx, (model_name, result) in enumerate(self.results.items()):
+            ax = axes[idx]
+            
+            sns.heatmap(
+                result['confusion_matrix'],
+                annot=True,
+                fmt='d',
+                cmap='Blues',
+                ax=ax,
+                cbar_kws={'label': 'Count'}
+            )
+            ax.set_title(f'{model_name}', fontweight='bold')
+            ax.set_ylabel('True Label')
+            ax.set_xlabel('Predicted Label')
         
-        print("All models and results saved successfully!")
+        plt.tight_layout()
+        plt.savefig('confusion_matrices.png', dpi=300, bbox_inches='tight')
+        print("Confusion matrices saved as 'confusion_matrices.png'")
+        plt.show()
+    
+    def save_results(self, output_file='model_results.csv'):
+        """Save results to CSV"""
         
-        return self
+        metrics_data = []
+        for model_name, result in self.results.items():
+            metrics = result['metrics']
+            metrics_data.append({
+                'Model': model_name,
+                'Accuracy': metrics['Accuracy'],
+                'AUC': metrics['AUC'],
+                'Precision': metrics['Precision'],
+                'Recall': metrics['Recall'],
+                'F1': metrics['F1'],
+                'MCC': metrics['MCC']
+            })
+        
+        metrics_df = pd.DataFrame(metrics_data)
+        metrics_df.to_csv(output_file, index=False)
+        print(f"\nResults saved to '{output_file}'")
+        
+        return metrics_df
 
 
-def main():
-    """
-    Main execution function
-    
-    Instructions:
-    1. Replace 'your_dataset.csv' with your actual dataset path
-    2. Replace 'target' with your actual target column name
-    3. Run this script to train all models
-    """
-    
-    # Configuration - MODIFY THESE
-    DATASET_PATH = 'data/heart.csv'  # Change to your dataset
-    TARGET_COLUMN = 'target'  # Change to your target column name
-    
-    # Create pipeline
-    pipeline = MLClassificationPipeline(DATASET_PATH)
-    
-    # Execute pipeline
-    pipeline.load_and_preprocess_data(TARGET_COLUMN)
-    pipeline.train_all_models()
-    pipeline.evaluate_all_models()
-    results_df = pipeline.print_results_table()
-    pipeline.save_models()
-    
-    print("\n" + "="*80)
-    print("Training Complete!")
-    print("="*80)
-    
-    return pipeline
-
-
+# Example usage
 if __name__ == "__main__":
-    main()
+    
+    # Instructions for use
+    print("""
+    ================================================================
+    ML Classification Pipeline
+    ================================================================
+    
+    To use this script:
+    
+    1. Replace 'your_dataset.csv' with your actual dataset path
+    2. Replace 'target_column_name' with your actual target column name
+    3. Run the script
+    
+    Example:
+        pipeline = MLClassificationPipeline(
+            dataset_path='data.csv',
+            target_column='class',
+            test_size=0.2,
+            random_state=42
+        )
+        
+        pipeline.load_data()
+        pipeline.preprocess_data()
+        pipeline.train_all_models()
+        pipeline.display_results()
+        pipeline.plot_comparison()
+        pipeline.plot_confusion_matrices()
+        pipeline.save_results()
+    
+    ================================================================
+    """)
+    
+    # Uncomment and modify the following to run:
+    # pipeline = MLClassificationPipeline(
+    #     dataset_path='your_dataset.csv',
+    #     target_column='your_target_column',
+    #     test_size=0.2,
+    #     random_state=42
+    # )
+    # 
+    # pipeline.load_data()
+    # pipeline.preprocess_data()
+    # pipeline.train_all_models()
+    # pipeline.display_results()
+    # pipeline.plot_comparison()
+    # pipeline.plot_confusion_matrices()
+    # pipeline.save_results()
