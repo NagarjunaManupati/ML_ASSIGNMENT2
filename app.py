@@ -1,29 +1,32 @@
-"""
-Machine Learning Assignment 2 - Streamlit Web Application
-Interactive ML Model Evaluation Dashboard
-"""
-
 import streamlit as st
 import pandas as pd
 import numpy as np
-import pickle
-import os
-from sklearn.preprocessing import StandardScaler, LabelEncoder
-from sklearn.metrics import (accuracy_score, roc_auc_score, precision_score,
-                             recall_score, f1_score, matthews_corrcoef,
-                             confusion_matrix, classification_report)
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.linear_model import LogisticRegression
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.naive_bayes import GaussianNB
+from sklearn.ensemble import RandomForestClassifier
+from xgboost import XGBClassifier
+from sklearn.metrics import (
+    accuracy_score, roc_auc_score, precision_score, 
+    recall_score, f1_score, matthews_corrcoef,
+    confusion_matrix, classification_report
+)
 import matplotlib.pyplot as plt
 import seaborn as sns
+import warnings
+warnings.filterwarnings('ignore')
 
 # Page configuration
 st.set_page_config(
     page_title="ML Classification Dashboard",
     page_icon="🤖",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide"
 )
 
-# Custom CSS for better UI
+# Custom CSS
 st.markdown("""
     <style>
     .main-header {
@@ -32,340 +35,483 @@ st.markdown("""
         color: #1f77b4;
         text-align: center;
         padding: 1rem 0;
-    }
-    .sub-header {
-        font-size: 1.5rem;
-        font-weight: bold;
-        color: #2c3e50;
-        margin-top: 1rem;
+        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
     }
     .metric-card {
         background-color: #f0f2f6;
         padding: 1rem;
         border-radius: 0.5rem;
-        border-left: 4px solid #1f77b4;
+        margin: 0.5rem 0;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
     }
     </style>
 """, unsafe_allow_html=True)
 
+# Title
+st.markdown('<div class="main-header">🤖 Machine Learning Classification Dashboard</div>', unsafe_allow_html=True)
+st.markdown("#### Build, Train, and Compare 6 Classification Models on Any Dataset")
+st.markdown("---")
+
 # Initialize session state
-if 'models_loaded' not in st.session_state:
-    st.session_state.models_loaded = False
-if 'models' not in st.session_state:
-    st.session_state.models = {}
+if 'models_trained' not in st.session_state:
+    st.session_state.models_trained = False
+if 'results' not in st.session_state:
+    st.session_state.results = {}
 
-# Model names mapping
-MODEL_NAMES = {
-    'Logistic Regression': 'logistic_regression.pkl',
-    'Decision Tree': 'decision_tree.pkl',
-    'kNN': 'knn.pkl',
-    'Naive Bayes': 'naive_bayes.pkl',
-    'Random Forest': 'random_forest.pkl',
-    'XGBoost': 'xgboost.pkl'
-}
+# Sidebar
+st.sidebar.title("⚙️ Configuration Panel")
+st.sidebar.markdown("---")
 
+# File upload
+uploaded_file = st.sidebar.file_uploader(
+    "📁 Upload CSV Dataset", 
+    type=['csv'],
+    help="Upload a CSV file with at least 12 features and 500 instances"
+)
 
-def load_model(model_path):
-    """Load a pickled model"""
-    try:
-        with open(model_path, 'rb') as f:
-            return pickle.load(f)
-    except Exception as e:
-        st.error(f"Error loading model: {e}")
-        return None
-
-
-def load_all_models():
-    """Load all pre-trained models"""
-    models = {}
-    model_dir = 'model'
+def preprocess_data(df, target_column):
+    """Preprocess the dataset for ML models"""
     
-    for model_name, filename in MODEL_NAMES.items():
-        model_path = os.path.join(model_dir, filename)
-        if os.path.exists(model_path):
-            models[model_name] = load_model(model_path)
-        else:
-            st.warning(f"Model file not found: {model_path}")
-    
-    # Load scaler
-    scaler_path = os.path.join(model_dir, 'scaler.pkl')
-    if os.path.exists(scaler_path):
-        models['scaler'] = load_model(scaler_path)
-    
-    # Load label encoder if exists
-    label_encoder_path = os.path.join(model_dir, 'label_encoder.pkl')
-    if os.path.exists(label_encoder_path):
-        models['label_encoder'] = load_model(label_encoder_path)
-    
-    return models
-
-
-def preprocess_data(df, scaler, target_column):
-    """Preprocess uploaded data"""
     # Separate features and target
-    if target_column in df.columns:
-        X = df.drop(columns=[target_column])
-        y = df[target_column]
-    else:
-        st.error(f"Target column '{target_column}' not found in dataset!")
-        return None, None
+    X = df.drop(columns=[target_column])
+    y = df[target_column]
+    
+    # Encode target variable if categorical
+    le_target = LabelEncoder()
+    y_encoded = le_target.fit_transform(y)
     
     # Handle categorical features
-    for col in X.select_dtypes(include=['object']).columns:
+    categorical_cols = X.select_dtypes(include=['object']).columns
+    for col in categorical_cols:
         le = LabelEncoder()
-        X[col] = le.fit_transform(X[col])
+        X[col] = le.fit_transform(X[col].astype(str))
     
-    # Encode target if categorical
-    if y.dtype == 'object':
-        le_target = LabelEncoder()
-        y = le_target.fit_transform(y)
+    # Handle missing values
+    X = X.fillna(X.mean())
     
-    # Scale features
-    X_scaled = scaler.transform(X)
+    # Feature scaling
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
     
-    return X_scaled, y
+    return X_scaled, y_encoded, le_target
 
-
-def calculate_metrics(y_true, y_pred, y_pred_proba=None):
-    """Calculate all evaluation metrics"""
+def calculate_metrics(y_true, y_pred, y_pred_proba, is_multiclass):
+    """Calculate all required metrics"""
+    
     metrics = {}
     
-    # Basic metrics
+    # Accuracy
     metrics['Accuracy'] = accuracy_score(y_true, y_pred)
     
     # AUC Score
-    if y_pred_proba is not None:
-        if len(np.unique(y_true)) == 2:
-            metrics['AUC'] = roc_auc_score(y_true, y_pred_proba[:, 1])
+    try:
+        if is_multiclass:
+            metrics['AUC'] = roc_auc_score(y_true, y_pred_proba, multi_class='ovr', average='weighted')
         else:
-            metrics['AUC'] = roc_auc_score(y_true, y_pred_proba, multi_class='ovr')
-    else:
-        metrics['AUC'] = None
+            metrics['AUC'] = roc_auc_score(y_true, y_pred_proba[:, 1])
+    except:
+        metrics['AUC'] = 0.0
     
     # Precision, Recall, F1
-    avg_method = 'binary' if len(np.unique(y_true)) == 2 else 'weighted'
-    metrics['Precision'] = precision_score(y_true, y_pred, average=avg_method, zero_division=0)
-    metrics['Recall'] = recall_score(y_true, y_pred, average=avg_method, zero_division=0)
-    metrics['F1'] = f1_score(y_true, y_pred, average=avg_method, zero_division=0)
+    metrics['Precision'] = precision_score(y_true, y_pred, average='weighted', zero_division=0)
+    metrics['Recall'] = recall_score(y_true, y_pred, average='weighted', zero_division=0)
+    metrics['F1'] = f1_score(y_true, y_pred, average='weighted', zero_division=0)
     
     # MCC
     metrics['MCC'] = matthews_corrcoef(y_true, y_pred)
     
     return metrics
 
-
-def plot_confusion_matrix(cm, title="Confusion Matrix"):
-    """Plot confusion matrix"""
-    fig, ax = plt.subplots(figsize=(8, 6))
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=ax)
-    ax.set_title(title, fontsize=16, fontweight='bold')
-    ax.set_ylabel('Actual', fontsize=12)
-    ax.set_xlabel('Predicted', fontsize=12)
-    return fig
-
-
-def main():
-    """Main Streamlit application"""
+def train_all_models(X_train, X_test, y_train, y_test, is_multiclass):
+    """Train all 6 required ML models"""
     
-    # Header
-    st.markdown('<div class="main-header">🤖 ML Classification Dashboard</div>', 
-                unsafe_allow_html=True)
-    st.markdown("---")
+    models = {
+        'Logistic Regression': LogisticRegression(max_iter=1000, random_state=42),
+        'Decision Tree': DecisionTreeClassifier(random_state=42),
+        'K-Nearest Neighbors': KNeighborsClassifier(),
+        'Naive Bayes': GaussianNB(),
+        'Random Forest': RandomForestClassifier(n_estimators=100, random_state=42),
+        'XGBoost': XGBClassifier(eval_metric='logloss', random_state=42, use_label_encoder=False)
+    }
     
-    # Sidebar
-    st.sidebar.title("📊 Control Panel")
-    st.sidebar.markdown("---")
+    results = {}
     
-    # Load models button
-    if st.sidebar.button("🔄 Load Pre-trained Models", use_container_width=True):
-        with st.spinner("Loading models..."):
-            st.session_state.models = load_all_models()
-            if st.session_state.models:
-                st.session_state.models_loaded = True
-                st.sidebar.success(f"✅ {len([k for k in st.session_state.models.keys() if k not in ['scaler', 'label_encoder']])} models loaded!")
+    progress_bar = st.progress(0)
+    status_text = st.empty()
     
-    # File upload section
-    st.sidebar.markdown("### 📁 Upload Test Data")
-    uploaded_file = st.sidebar.file_uploader(
-        "Upload CSV file",
-        type=['csv'],
-        help="Upload your test dataset (CSV format only)"
-    )
-    
-    # Target column input
-    target_column = st.sidebar.text_input(
-        "Target Column Name",
-        value="target",
-        help="Enter the name of your target/label column"
-    )
-    
-    # Main content area
-    if not st.session_state.models_loaded:
-        st.info("👈 Please load the pre-trained models from the sidebar to get started!")
+    for idx, (name, model) in enumerate(models.items()):
+        status_text.text(f"Training {name}...")
         
-        # Display information about the app
-        col1, col2 = st.columns(2)
+        # Train model
+        model.fit(X_train, y_train)
+        
+        # Predictions
+        y_pred = model.predict(X_test)
+        y_pred_proba = model.predict_proba(X_test)
+        
+        # Calculate metrics
+        metrics = calculate_metrics(y_test, y_pred, y_pred_proba, is_multiclass)
+        
+        # Store results
+        results[name] = {
+            'model': model,
+            'y_pred': y_pred,
+            'metrics': metrics,
+            'confusion_matrix': confusion_matrix(y_test, y_pred),
+            'classification_report': classification_report(y_test, y_pred)
+        }
+        
+        progress_bar.progress((idx + 1) / len(models))
+    
+    status_text.text("✅ All models trained successfully!")
+    progress_bar.empty()
+    status_text.empty()
+    
+    return results
+
+# Main App Logic
+if uploaded_file is not None:
+    
+    # Load dataset
+    try:
+        df = pd.read_csv(uploaded_file)
+        
+        st.sidebar.success(f"✅ Loaded: {df.shape[0]} rows × {df.shape[1]} columns")
+        
+        # Dataset validation
+        if df.shape[0] < 500:
+            st.sidebar.warning(f"⚠️ Dataset has {df.shape[0]} rows. Minimum required: 500")
+        if df.shape[1] < 12:
+            st.sidebar.warning(f"⚠️ Dataset has {df.shape[1]} columns. Minimum required: 12")
+        
+    except Exception as e:
+        st.error(f"Error loading file: {e}")
+        st.stop()
+    
+    # Display dataset preview
+    with st.expander("📊 Dataset Preview & Statistics", expanded=True):
+        col1, col2 = st.columns([2, 1])
         
         with col1:
-            st.markdown("### 🎯 Features")
-            st.markdown("""
-            - **6 ML Classification Models**
-                - Logistic Regression
-                - Decision Tree
-                - K-Nearest Neighbors
-                - Naive Bayes
-                - Random Forest
-                - XGBoost
-            """)
+            st.write("**First 10 Rows:**")
+            st.dataframe(df.head(10), use_container_width=True)
         
         with col2:
-            st.markdown("### 📈 Evaluation Metrics")
-            st.markdown("""
-            - Accuracy
-            - AUC Score
-            - Precision
-            - Recall
-            - F1 Score
-            - Matthews Correlation Coefficient (MCC)
-            """)
+            st.write("**Dataset Info:**")
+            st.metric("Total Rows", df.shape[0])
+            st.metric("Total Columns", df.shape[1])
+            st.metric("Missing Values", df.isnull().sum().sum())
+            st.metric("Duplicate Rows", df.duplicated().sum())
     
-    else:
-        if uploaded_file is not None:
-            # Read uploaded file
-            try:
-                df = pd.read_csv(uploaded_file)
-                
-                st.success(f"✅ Dataset uploaded successfully! Shape: {df.shape}")
-                
-                # Display dataset info
-                with st.expander("📊 Dataset Preview", expanded=False):
-                    st.dataframe(df.head(10), use_container_width=True)
-                    
-                    col1, col2, col3 = st.columns(3)
-                    col1.metric("Rows", df.shape[0])
-                    col2.metric("Columns", df.shape[1])
-                    col3.metric("Features", df.shape[1] - 1)
-                
-                # Model selection
-                st.markdown("### 🎯 Select Model for Prediction")
-                
-                available_models = [name for name in MODEL_NAMES.keys() 
-                                  if name in st.session_state.models]
-                
-                selected_model = st.selectbox(
-                    "Choose a model:",
-                    options=available_models,
-                    help="Select which model to use for prediction"
-                )
-                
-                if st.button("🚀 Run Evaluation", use_container_width=True, type="primary"):
-                    
-                    with st.spinner(f"Running {selected_model}..."):
-                        
-                        # Preprocess data
-                        X_test, y_test = preprocess_data(
-                            df, 
-                            st.session_state.models['scaler'],
-                            target_column
-                        )
-                        
-                        if X_test is not None and y_test is not None:
-                            
-                            # Get model
-                            model = st.session_state.models[selected_model]
-                            
-                            # Make predictions
-                            y_pred = model.predict(X_test)
-                            
-                            # Get probabilities if available
-                            y_pred_proba = None
-                            if hasattr(model, 'predict_proba'):
-                                y_pred_proba = model.predict_proba(X_test)
-                            
-                            # Calculate metrics
-                            metrics = calculate_metrics(y_test, y_pred, y_pred_proba)
-                            
-                            # Display results
-                            st.markdown("---")
-                            st.markdown(f"### 📊 Evaluation Results - {selected_model}")
-                            
-                            # Metrics in columns
-                            col1, col2, col3 = st.columns(3)
-                            
-                            with col1:
-                                st.metric("🎯 Accuracy", f"{metrics['Accuracy']:.4f}")
-                                st.metric("🎲 Precision", f"{metrics['Precision']:.4f}")
-                            
-                            with col2:
-                                auc_value = f"{metrics['AUC']:.4f}" if metrics['AUC'] else "N/A"
-                                st.metric("📈 AUC Score", auc_value)
-                                st.metric("🔍 Recall", f"{metrics['Recall']:.4f}")
-                            
-                            with col3:
-                                st.metric("⚖️ F1 Score", f"{metrics['F1']:.4f}")
-                                st.metric("🧮 MCC Score", f"{metrics['MCC']:.4f}")
-                            
-                            st.markdown("---")
-                            
-                            # Confusion Matrix and Classification Report
-                            col1, col2 = st.columns([1, 1])
-                            
-                            with col1:
-                                st.markdown("#### 🔲 Confusion Matrix")
-                                cm = confusion_matrix(y_test, y_pred)
-                                fig = plot_confusion_matrix(cm, f"{selected_model} - Confusion Matrix")
-                                st.pyplot(fig)
-                                plt.close()
-                            
-                            with col2:
-                                st.markdown("#### 📋 Classification Report")
-                                report = classification_report(y_test, y_pred)
-                                st.text(report)
-                            
-                            # Detailed metrics table
-                            st.markdown("---")
-                            st.markdown("#### 📊 Detailed Metrics Summary")
-                            
-                            metrics_df = pd.DataFrame({
-                                'Metric': ['Accuracy', 'AUC Score', 'Precision', 'Recall', 'F1 Score', 'MCC Score'],
-                                'Value': [
-                                    f"{metrics['Accuracy']:.4f}",
-                                    f"{metrics['AUC']:.4f}" if metrics['AUC'] else "N/A",
-                                    f"{metrics['Precision']:.4f}",
-                                    f"{metrics['Recall']:.4f}",
-                                    f"{metrics['F1']:.4f}",
-                                    f"{metrics['MCC']:.4f}"
-                                ]
-                            })
-                            
-                            st.dataframe(metrics_df, use_container_width=True, hide_index=True)
-                            
-                            st.success("✅ Evaluation completed successfully!")
-            
-            except Exception as e:
-                st.error(f"❌ Error processing file: {str(e)}")
-        
-        else:
-            st.info("👈 Please upload a CSV file from the sidebar to begin evaluation!")
-            
-            # Show model status
-            st.markdown("### ✅ Loaded Models")
-            
-            loaded_models = [name for name in MODEL_NAMES.keys() 
-                           if name in st.session_state.models]
-            
-            for i, model_name in enumerate(loaded_models, 1):
-                st.markdown(f"**{i}.** {model_name} ✓")
+    # Target column selection
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("🎯 Target Selection")
     
-    # Footer
-    st.markdown("---")
-    st.markdown(
-        "<div style='text-align: center; color: #666;'>"
-        "ML Assignment 2 - Classification Dashboard | Built with Streamlit"
-        "</div>",
-        unsafe_allow_html=True
+    target_column = st.sidebar.selectbox(
+        "Select Target Column to Predict",
+        options=df.columns.tolist(),
+        help="Choose the column you want to predict"
     )
+    
+    if target_column:
+        
+        # Display target distribution
+        with st.expander("🎯 Target Variable Analysis"):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write("**Target Distribution:**")
+                target_counts = df[target_column].value_counts()
+                st.dataframe(target_counts.reset_index().rename(
+                    columns={'index': 'Class', target_column: 'Count'}
+                ))
+                
+                n_classes = df[target_column].nunique()
+                st.info(f"**Number of Classes:** {n_classes}")
+                
+            with col2:
+                fig, ax = plt.subplots(figsize=(8, 5))
+                target_counts.plot(kind='bar', ax=ax, color='steelblue')
+                ax.set_title(f'Distribution of {target_column}')
+                ax.set_xlabel('Class')
+                ax.set_ylabel('Count')
+                plt.xticks(rotation=45)
+                st.pyplot(fig)
+                plt.close()
+        
+        # Model training parameters
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("⚡ Training Parameters")
+        
+        test_size = st.sidebar.slider(
+            "Test Size (%)", 
+            min_value=10, 
+            max_value=40, 
+            value=20,
+            help="Percentage of data to use for testing"
+        ) / 100
+        
+        random_state = st.sidebar.number_input(
+            "Random State",
+            min_value=0,
+            max_value=100,
+            value=42,
+            help="Seed for reproducibility"
+        )
+        
+        # Train button
+        st.sidebar.markdown("---")
+        train_button = st.sidebar.button("🚀 Train All Models", type="primary", use_container_width=True)
+        
+        if train_button:
+            
+            with st.spinner("🔄 Preprocessing data and training models..."):
+                
+                try:
+                    # Preprocess data
+                    X, y, label_encoder = preprocess_data(df, target_column)
+                    
+                    # Split data
+                    X_train, X_test, y_train, y_test = train_test_split(
+                        X, y, test_size=test_size, random_state=random_state, stratify=y
+                    )
+                    
+                    # Check if multiclass
+                    is_multiclass = len(np.unique(y)) > 2
+                    
+                    st.info(f"📊 Training Set: {X_train.shape[0]} samples | Test Set: {X_test.shape[0]} samples")
+                    
+                    # Train all models
+                    results = train_all_models(X_train, X_test, y_train, y_test, is_multiclass)
+                    
+                    # Store in session state
+                    st.session_state.results = results
+                    st.session_state.models_trained = True
+                    st.session_state.y_test = y_test
+                    st.session_state.label_encoder = label_encoder
+                    
+                    st.success("✅ All 6 models trained successfully!")
+                    
+                except Exception as e:
+                    st.error(f"Error during training: {e}")
+                    st.stop()
+        
+        # Display results if models are trained
+        if st.session_state.models_trained:
+            
+            st.markdown("---")
+            st.header("📈 Model Performance Comparison")
+            
+            # Create metrics comparison table
+            metrics_data = []
+            for model_name, result in st.session_state.results.items():
+                metrics = result['metrics']
+                metrics_data.append({
+                    'Model': model_name,
+                    'Accuracy': f"{metrics['Accuracy']:.4f}",
+                    'AUC': f"{metrics['AUC']:.4f}",
+                    'Precision': f"{metrics['Precision']:.4f}",
+                    'Recall': f"{metrics['Recall']:.4f}",
+                    'F1': f"{metrics['F1']:.4f}",
+                    'MCC': f"{metrics['MCC']:.4f}"
+                })
+            
+            metrics_df = pd.DataFrame(metrics_data)
+            
+            # Display table
+            st.dataframe(
+                metrics_df.style.set_properties(**{
+                    'background-color': '#f0f2f6',
+                    'color': 'black',
+                    'border-color': 'white'
+                }),
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            # Best model highlight
+            st.markdown("### 🏆 Best Performing Models")
+            col1, col2, col3 = st.columns(3)
+            
+            # Find best models
+            best_accuracy = max(st.session_state.results.items(), 
+                              key=lambda x: x[1]['metrics']['Accuracy'])
+            best_f1 = max(st.session_state.results.items(), 
+                         key=lambda x: x[1]['metrics']['F1'])
+            best_mcc = max(st.session_state.results.items(), 
+                          key=lambda x: x[1]['metrics']['MCC'])
+            
+            with col1:
+                st.metric(
+                    "Best Accuracy",
+                    f"{best_accuracy[1]['metrics']['Accuracy']:.4f}",
+                    delta=best_accuracy[0]
+                )
+            
+            with col2:
+                st.metric(
+                    "Best F1 Score",
+                    f"{best_f1[1]['metrics']['F1']:.4f}",
+                    delta=best_f1[0]
+                )
+            
+            with col3:
+                st.metric(
+                    "Best MCC Score",
+                    f"{best_mcc[1]['metrics']['MCC']:.4f}",
+                    delta=best_mcc[0]
+                )
+            
+            # Model selection for detailed analysis
+            st.markdown("---")
+            st.header("🔍 Detailed Model Analysis")
+            
+            selected_model = st.selectbox(
+                "Select a model for detailed analysis:",
+                options=list(st.session_state.results.keys())
+            )
+            
+            if selected_model:
+                result = st.session_state.results[selected_model]
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    # Confusion Matrix
+                    st.subheader("Confusion Matrix")
+                    fig, ax = plt.subplots(figsize=(8, 6))
+                    sns.heatmap(
+                        result['confusion_matrix'],
+                        annot=True,
+                        fmt='d',
+                        cmap='Blues',
+                        ax=ax,
+                        cbar_kws={'label': 'Count'}
+                    )
+                    ax.set_title(f'Confusion Matrix - {selected_model}')
+                    ax.set_ylabel('True Label')
+                    ax.set_xlabel('Predicted Label')
+                    st.pyplot(fig)
+                    plt.close()
+                
+                with col2:
+                    # Metrics Bar Chart
+                    st.subheader("Performance Metrics")
+                    metrics_to_plot = {k: v for k, v in result['metrics'].items()}
+                    
+                    fig, ax = plt.subplots(figsize=(8, 6))
+                    bars = ax.barh(list(metrics_to_plot.keys()), list(metrics_to_plot.values()))
+                    
+                    # Color bars
+                    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
+                    for bar, color in zip(bars, colors):
+                        bar.set_color(color)
+                    
+                    ax.set_xlabel('Score')
+                    ax.set_title(f'Metrics - {selected_model}')
+                    ax.set_xlim(0, 1)
+                    
+                    # Add value labels
+                    for i, (metric, value) in enumerate(metrics_to_plot.items()):
+                        ax.text(value, i, f' {value:.4f}', va='center')
+                    
+                    st.pyplot(fig)
+                    plt.close()
+                
+                # Classification Report
+                st.subheader("📋 Classification Report")
+                st.text(result['classification_report'])
+            
+            # Comparative visualizations
+            st.markdown("---")
+            st.header("📊 Comparative Analysis")
+            
+            # Metrics comparison chart
+            fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+            axes = axes.ravel()
+            
+            metric_names = ['Accuracy', 'AUC', 'Precision', 'Recall', 'F1', 'MCC']
+            
+            for idx, metric_name in enumerate(metric_names):
+                ax = axes[idx]
+                
+                model_names = list(st.session_state.results.keys())
+                values = [st.session_state.results[m]['metrics'][metric_name] for m in model_names]
+                
+                bars = ax.bar(range(len(model_names)), values, color='steelblue', alpha=0.7)
+                
+                # Highlight best model
+                best_idx = values.index(max(values))
+                bars[best_idx].set_color('green')
+                bars[best_idx].set_alpha(1.0)
+                
+                ax.set_xticks(range(len(model_names)))
+                ax.set_xticklabels(model_names, rotation=45, ha='right')
+                ax.set_ylabel('Score')
+                ax.set_title(f'{metric_name} Comparison')
+                ax.set_ylim(0, 1.1)
+                ax.grid(axis='y', alpha=0.3)
+                
+                # Add value labels
+                for i, v in enumerate(values):
+                    ax.text(i, v + 0.02, f'{v:.3f}', ha='center', fontsize=9)
+            
+            plt.tight_layout()
+            st.pyplot(fig)
+            plt.close()
+            
+            # Download results
+            st.markdown("---")
+            st.header("💾 Export Results")
+            
+            csv_data = metrics_df.to_csv(index=False)
+            st.download_button(
+                label="📥 Download Metrics as CSV",
+                data=csv_data,
+                file_name="model_comparison_results.csv",
+                mime="text/csv"
+            )
 
+else:
+    # Landing page
+    st.info("👈 Please upload a CSV dataset from the sidebar to begin")
+    
+    st.markdown("""
+    ### 🎯 How to Use This App
+    
+    1. **Upload Dataset**: Click on the sidebar and upload your CSV file
+    2. **Select Target**: Choose the column you want to predict
+    3. **Configure**: Adjust training parameters if needed
+    4. **Train**: Click "Train All Models" button
+    5. **Analyze**: Review performance metrics and comparisons
+    
+    ### 📋 Requirements
+    - Minimum 12 features
+    - Minimum 500 instances
+    - Classification problem (binary or multi-class)
+    
+    ### 🤖 Models Implemented
+    1. Logistic Regression
+    2. Decision Tree Classifier
+    3. K-Nearest Neighbors
+    4. Naive Bayes (Gaussian)
+    5. Random Forest (Ensemble)
+    6. XGBoost (Ensemble)
+    
+    ### 📊 Evaluation Metrics
+    - Accuracy
+    - AUC Score
+    - Precision
+    - Recall
+    - F1 Score
+    - Matthews Correlation Coefficient (MCC)
+    """)
 
-if __name__ == "__main__":
-    main()
+# Footer
+st.markdown("---")
+st.markdown(
+    "<div style='text-align: center; color: gray;'>ML Classification Dashboard | Built with Streamlit</div>",
+    unsafe_allow_html=True
+)
